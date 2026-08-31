@@ -2,6 +2,7 @@ package com.example.flood.data.remote
 
 import android.content.Context
 import android.util.Log
+import com.example.flood.data.model.Comment
 import com.example.flood.data.model.Incident
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
@@ -32,24 +33,13 @@ object CloudIncidentSyncManager {
     }
 
     /**
-     * Broadcasts an incident to all connected devices on the shared disaster alert network.
+     * Broadcasts a newly reported incident to all connected devices.
      */
     suspend fun publishIncident(context: Context, incident: Incident): Boolean = withContext(Dispatchers.IO) {
         try {
             val deviceId = getDeviceId(context)
-            val url = URL(SYNC_URL)
-            val connection = (url.openConnection() as HttpURLConnection).apply {
-                requestMethod = "POST"
-                doOutput = true
-                connectTimeout = 8000
-                readTimeout = 8000
-                setRequestProperty("Content-Type", "application/json; charset=utf-8")
-                setRequestProperty("Title", "🚨 Community Disaster: ${incident.type.uppercase()}")
-                setRequestProperty("Priority", if (incident.severity.equals("HIGH", ignoreCase = true)) "5" else "4")
-                setRequestProperty("Tags", "warning,rotating_light")
-            }
-
             val payload = JSONObject().apply {
+                put("action", "incident")
                 put("type", incident.type)
                 put("note", incident.note)
                 put("lat", incident.lat)
@@ -58,31 +48,218 @@ object CloudIncidentSyncManager {
                 put("createdAt", incident.createdAt)
                 put("senderDeviceId", deviceId)
             }
-
-            OutputStreamWriter(connection.outputStream).use { writer ->
-                writer.write(payload.toString())
-                writer.flush()
-            }
-
-            val responseCode = connection.responseCode
-            Log.d(TAG, "Published incident to cloud relay. Response code: $responseCode")
-            connection.disconnect()
-            responseCode in 200..299
+            sendPayload(
+                payload = payload,
+                title = "🚨 Community Disaster: ${incident.type.uppercase()}",
+                priority = if (incident.severity.equals("HIGH", ignoreCase = true)) "5" else "4",
+                tags = "warning,rotating_light"
+            )
         } catch (e: Exception) {
-            Log.e(TAG, "Failed to publish incident to cloud relay: ${e.message}", e)
+            Log.e(TAG, "Failed to publish incident: ${e.message}", e)
             false
         }
     }
 
     /**
-     * Fetches recent community incidents from the shared cloud relay.
-     * Returns a list of new Incidents originating from OTHER devices.
+     * Broadcasts a new comment on an incident.
      */
-    suspend fun fetchRemoteIncidents(context: Context): List<Incident> = withContext(Dispatchers.IO) {
-        val remoteList = mutableListOf<Incident>()
+    suspend fun publishComment(context: Context, comment: Comment): Boolean = withContext(Dispatchers.IO) {
+        try {
+            val deviceId = getDeviceId(context)
+            val payload = JSONObject().apply {
+                put("action", "comment")
+                put("incidentId", comment.incidentId)
+                put("incidentCreatedAt", comment.incidentCreatedAt)
+                put("authorName", comment.authorName)
+                put("text", comment.text)
+                put("createdAt", comment.createdAt)
+                put("senderDeviceId", deviceId)
+            }
+            sendPayload(
+                payload = payload,
+                title = "💬 New Comment from ${comment.authorName}",
+                priority = "3",
+                tags = "speech_balloon"
+            )
+        } catch (e: Exception) {
+            Log.e(TAG, "Failed to publish comment: ${e.message}", e)
+            false
+        }
+    }
+
+    /**
+     * Broadcasts updated votes for an incident.
+     */
+    suspend fun publishVote(
+        context: Context,
+        incidentCreatedAt: Long,
+        upvotes: Int,
+        downvotes: Int,
+        score: Int
+    ): Boolean = withContext(Dispatchers.IO) {
+        try {
+            val deviceId = getDeviceId(context)
+            val payload = JSONObject().apply {
+                put("action", "vote")
+                put("incidentCreatedAt", incidentCreatedAt)
+                put("upvotes", upvotes)
+                put("downvotes", downvotes)
+                put("score", score)
+                put("senderDeviceId", deviceId)
+            }
+            sendPayload(
+                payload = payload,
+                title = "👍 Incident Verified by Community",
+                priority = "2",
+                tags = "thumbsup"
+            )
+        } catch (e: Exception) {
+            false
+        }
+    }
+
+    /**
+     * Broadcasts status change (e.g. OPEN or RESOLVED).
+     */
+    suspend fun publishStatus(
+        context: Context,
+        incidentCreatedAt: Long,
+        status: String
+    ): Boolean = withContext(Dispatchers.IO) {
+        try {
+            val deviceId = getDeviceId(context)
+            val payload = JSONObject().apply {
+                put("action", "status")
+                put("incidentCreatedAt", incidentCreatedAt)
+                put("status", status)
+                put("senderDeviceId", deviceId)
+            }
+            sendPayload(
+                payload = payload,
+                title = "✅ Incident Status: $status",
+                priority = "3",
+                tags = "check"
+            )
+        } catch (e: Exception) {
+            false
+        }
+    }
+
+    private fun sendPayload(payload: JSONObject, title: String, priority: String, tags: String): Boolean {
+        val url = URL(SYNC_URL)
+        val connection = (url.openConnection() as HttpURLConnection).apply {
+            requestMethod = "POST"
+            doOutput = true
+            connectTimeout = 8000
+            readTimeout = 8000
+            setRequestProperty("Content-Type", "application/json; charset=utf-8")
+            setRequestProperty("Title", title)
+            setRequestProperty("Priority", priority)
+            setRequestProperty("Tags", tags)
+        }
+
+        OutputStreamWriter(connection.outputStream).use { writer ->
+            writer.write(payload.toString())
+            writer.flush()
+        }
+
+        val responseCode = connection.responseCode
+        connection.disconnect()
+        return responseCode in 200..299
+    }
+
+    sealed class RemoteEvent {
+        data class NewIncident(val incident: Incident) : RemoteEvent()
+        data class NewComment(val comment: Comment) : RemoteEvent()
+        data class VoteUpdate(val incidentCreatedAt: Long, val upvotes: Int, val downvotes: Int, val score: Int) : RemoteEvent()
+        data class StatusUpdate(val incidentCreatedAt: Long, val status: String) : RemoteEvent()
+    }
+
+    fun parseMessage(messageBody: String, myDeviceId: String): RemoteEvent? {
+        if (messageBody.isBlank() || !messageBody.startsWith("{")) return null
+        return try {
+            val json = JSONObject(messageBody)
+            val sender = json.optString("senderDeviceId")
+            if (sender == myDeviceId) return null // Ignore self messages
+
+            val action = json.optString("action", "incident")
+            when (action) {
+                "incident" -> {
+                    val type = json.optString("type", "flood")
+                    val note = json.optString("note", "")
+                    val lat = json.optDouble("lat", 0.0)
+                    val lng = json.optDouble("lng", 0.0)
+                    val severity = json.optString("severity", "HIGH")
+                    val createdAt = json.optLong("createdAt", System.currentTimeMillis())
+
+                    if (lat != 0.0 && lng != 0.0) {
+                        RemoteEvent.NewIncident(
+                            Incident(
+                                type = type,
+                                note = note,
+                                lat = lat,
+                                lng = lng,
+                                createdAt = createdAt,
+                                severity = severity,
+                                userReported = true,
+                                score = 0,
+                                upvotes = 0,
+                                downvotes = 0,
+                                status = "OPEN",
+                                userVote = 0
+                            )
+                        )
+                    } else null
+                }
+                "comment" -> {
+                    val incidentId = json.optLong("incidentId", 0L)
+                    val incidentCreatedAt = json.optLong("incidentCreatedAt", 0L)
+                    val authorName = json.optString("authorName", "Community Member")
+                    val text = json.optString("text", "")
+                    val createdAt = json.optLong("createdAt", System.currentTimeMillis())
+                    if (text.isNotBlank()) {
+                        RemoteEvent.NewComment(
+                            Comment(
+                                incidentId = incidentId,
+                                incidentCreatedAt = incidentCreatedAt,
+                                authorName = authorName,
+                                text = text,
+                                createdAt = createdAt,
+                                senderDeviceId = sender
+                            )
+                        )
+                    } else null
+                }
+                "vote" -> {
+                    val incidentCreatedAt = json.optLong("incidentCreatedAt", 0L)
+                    val upvotes = json.optInt("upvotes", 0)
+                    val downvotes = json.optInt("downvotes", 0)
+                    val score = json.optInt("score", 0)
+                    if (incidentCreatedAt != 0L) {
+                        RemoteEvent.VoteUpdate(incidentCreatedAt, upvotes, downvotes, score)
+                    } else null
+                }
+                "status" -> {
+                    val incidentCreatedAt = json.optLong("incidentCreatedAt", 0L)
+                    val status = json.optString("status", "OPEN")
+                    if (incidentCreatedAt != 0L) {
+                        RemoteEvent.StatusUpdate(incidentCreatedAt, status)
+                    } else null
+                }
+                else -> null
+            }
+        } catch (e: Exception) {
+            null
+        }
+    }
+
+    /**
+     * Polls recent events from the last 48h.
+     */
+    suspend fun fetchRecentEvents(context: Context): List<RemoteEvent> = withContext(Dispatchers.IO) {
+        val events = mutableListOf<RemoteEvent>()
         try {
             val myDeviceId = getDeviceId(context)
-            // Query recent 24-48 hours of published incidents
             val queryUrl = URL("$SYNC_URL/json?poll=1&since=48h")
             val connection = (queryUrl.openConnection() as HttpURLConnection).apply {
                 requestMethod = "GET"
@@ -100,47 +277,21 @@ object CloudIncidentSyncManager {
                             val eventJson = JSONObject(trimmed)
                             if (eventJson.optString("event") == "message") {
                                 val messageBody = eventJson.optString("message")
-                                if (messageBody.isNotBlank() && messageBody.startsWith("{")) {
-                                    val incJson = JSONObject(messageBody)
-                                    val sender = incJson.optString("senderDeviceId")
-                                    // Skip messages sent by this device itself
-                                    if (sender == myDeviceId) {
-                                        continue
-                                    }
-
-                                    val type = incJson.optString("type", "flood")
-                                    val note = incJson.optString("note", "")
-                                    val lat = incJson.optDouble("lat", 0.0)
-                                    val lng = incJson.optDouble("lng", 0.0)
-                                    val severity = incJson.optString("severity", "HIGH")
-                                    val createdAt = incJson.optLong("createdAt", eventJson.optLong("time") * 1000L)
-
-                                    if (lat != 0.0 && lng != 0.0) {
-                                        remoteList.add(
-                                            Incident(
-                                                type = type,
-                                                note = note,
-                                                lat = lat,
-                                                lng = lng,
-                                                createdAt = createdAt,
-                                                severity = severity,
-                                                userReported = true,
-                                                score = 0
-                                            )
-                                        )
-                                    }
+                                val event = parseMessage(messageBody, myDeviceId)
+                                if (event != null) {
+                                    events.add(event)
                                 }
                             }
-                        } catch (pe: Exception) {
-                            // Non-json or different event line, skip
+                        } catch (e: Exception) {
+                            // skip
                         }
                     }
                 }
             }
             connection.disconnect()
         } catch (e: Exception) {
-            Log.w(TAG, "Could not sync remote incidents: ${e.message}")
+            Log.w(TAG, "Poll failed: ${e.message}")
         }
-        remoteList
+        events
     }
 }

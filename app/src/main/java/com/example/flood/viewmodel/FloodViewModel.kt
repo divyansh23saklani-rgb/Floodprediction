@@ -5,6 +5,7 @@ import androidx.lifecycle.AndroidViewModel
 import androidx.lifecycle.viewModelScope
 import com.example.flood.data.local.AppDatabase
 import com.example.flood.data.local.SeedData
+import com.example.flood.data.model.Comment
 import com.example.flood.data.model.DisasterSimulation
 import com.example.flood.data.model.EmergencyService
 import com.example.flood.data.model.Incident
@@ -14,9 +15,11 @@ import com.example.flood.data.remote.CloudIncidentSyncManager
 import com.example.flood.data.repository.EmergencyServicesRepository
 import com.example.flood.data.repository.IncidentRepository
 import com.example.flood.data.repository.WeatherRepository
+import com.example.flood.service.DisasterSyncService
 import com.example.flood.util.NotificationHelper
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.delay
+import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.SharingStarted
 import kotlinx.coroutines.flow.StateFlow
@@ -49,7 +52,7 @@ data class FloodUiState(
 class FloodViewModel(application: Application) : AndroidViewModel(application) {
 
     private val database = AppDatabase.getDatabase(application, viewModelScope)
-    private val incidentRepository = IncidentRepository(database.incidentDao())
+    private val incidentRepository = IncidentRepository(database.incidentDao(), database.commentDao())
     private val emergencyServicesRepository = EmergencyServicesRepository()
     private val weatherRepository = WeatherRepository()
 
@@ -61,6 +64,13 @@ class FloodViewModel(application: Application) : AndroidViewModel(application) {
             scope = viewModelScope,
             started = SharingStarted.WhileSubscribed(5000),
             initialValue = SeedData.INITIAL_INCIDENTS
+        )
+
+    val comments: StateFlow<List<Comment>> = incidentRepository.allComments
+        .stateIn(
+            scope = viewModelScope,
+            started = SharingStarted.WhileSubscribed(5000),
+            initialValue = emptyList()
         )
 
     val emergencyServices: List<EmergencyService> = emergencyServicesRepository.getAllServices()
@@ -81,6 +91,7 @@ class FloodViewModel(application: Application) : AndroidViewModel(application) {
             incidentRepository.seedIfEmpty()
             refreshWeatherData()
             startCloudSyncLoop()
+            DisasterSyncService.start(application)
         }
     }
 
@@ -92,25 +103,53 @@ class FloodViewModel(application: Application) : AndroidViewModel(application) {
                 } catch (e: Exception) {
                     // Suppress and continue next loop
                 }
-                delay(8000) // Poll for new community reports every 8 seconds
+                delay(6000) // Poll for new community reports every 6 seconds
             }
         }
     }
 
     suspend fun syncRemoteIncidents() {
-        val remoteIncidents = CloudIncidentSyncManager.fetchRemoteIncidents(getApplication())
-        for (remote in remoteIncidents) {
-            val isNew = incidentRepository.insertRemoteIncident(remote)
-            if (isNew) {
-                // Trigger real-time push notification on this device for the incoming community hazard
-                NotificationHelper.sendIncidentReportNotification(
-                    context = getApplication(),
-                    typeLabel = remote.type.uppercase(),
-                    severity = remote.severity,
-                    locationNote = remote.note.ifBlank { "Location: (${remote.lat}, ${remote.lng})" }
-                )
-                _uiState.update {
-                    it.copy(infoMessage = "🚨 Live Alert: New ${remote.type.uppercase()} reported nearby!")
+        val remoteEvents = CloudIncidentSyncManager.fetchRecentEvents(getApplication())
+        for (event in remoteEvents) {
+            when (event) {
+                is CloudIncidentSyncManager.RemoteEvent.NewIncident -> {
+                    val isNew = incidentRepository.insertRemoteIncident(event.incident)
+                    if (isNew) {
+                        NotificationHelper.sendIncidentReportNotification(
+                            context = getApplication(),
+                            typeLabel = event.incident.type.uppercase(),
+                            severity = event.incident.severity,
+                            locationNote = event.incident.note.ifBlank { "Location: (${event.incident.lat}, ${event.incident.lng})" }
+                        )
+                        _uiState.update {
+                            it.copy(infoMessage = "🚨 Live Alert: New ${event.incident.type.uppercase()} reported nearby!")
+                        }
+                    }
+                }
+                is CloudIncidentSyncManager.RemoteEvent.NewComment -> {
+                    val isNew = incidentRepository.insertRemoteComment(event.comment)
+                    if (isNew) {
+                        NotificationHelper.sendCommentNotification(
+                            context = getApplication(),
+                            author = event.comment.authorName,
+                            commentText = event.comment.text,
+                            hazardType = "Community Hazard Report"
+                        )
+                    }
+                }
+                is CloudIncidentSyncManager.RemoteEvent.VoteUpdate -> {
+                    incidentRepository.applyRemoteVote(
+                        createdAt = event.incidentCreatedAt,
+                        upvotes = event.upvotes,
+                        downvotes = event.downvotes,
+                        score = event.score
+                    )
+                }
+                is CloudIncidentSyncManager.RemoteEvent.StatusUpdate -> {
+                    incidentRepository.applyRemoteStatus(
+                        createdAt = event.incidentCreatedAt,
+                        status = event.status
+                    )
                 }
             }
         }
@@ -119,6 +158,79 @@ class FloodViewModel(application: Application) : AndroidViewModel(application) {
     fun triggerSync() {
         viewModelScope.launch(Dispatchers.IO) {
             syncRemoteIncidents()
+            _uiState.update { it.copy(infoMessage = "Hazards synced with community network") }
+        }
+    }
+
+    fun getCommentsForIncident(incidentId: Long, createdAt: Long): Flow<List<Comment>> {
+        return incidentRepository.getCommentsForIncident(incidentId, createdAt)
+    }
+
+    fun upvoteIncident(id: Long) {
+        viewModelScope.launch {
+            val updated = incidentRepository.toggleUpvote(id)
+            if (updated != null) {
+                launch(Dispatchers.IO) {
+                    CloudIncidentSyncManager.publishVote(
+                        context = getApplication(),
+                        incidentCreatedAt = updated.createdAt,
+                        upvotes = updated.upvotes,
+                        downvotes = updated.downvotes,
+                        score = updated.score
+                    )
+                }
+            }
+        }
+    }
+
+    fun downvoteIncident(id: Long) {
+        viewModelScope.launch {
+            val updated = incidentRepository.toggleDownvote(id)
+            if (updated != null) {
+                launch(Dispatchers.IO) {
+                    CloudIncidentSyncManager.publishVote(
+                        context = getApplication(),
+                        incidentCreatedAt = updated.createdAt,
+                        upvotes = updated.upvotes,
+                        downvotes = updated.downvotes,
+                        score = updated.score
+                    )
+                }
+            }
+        }
+    }
+
+    fun updateIncidentStatus(id: Long, newStatus: String) {
+        viewModelScope.launch {
+            val updated = incidentRepository.updateIncidentStatus(id, newStatus)
+            if (updated != null) {
+                launch(Dispatchers.IO) {
+                    CloudIncidentSyncManager.publishStatus(
+                        context = getApplication(),
+                        incidentCreatedAt = updated.createdAt,
+                        status = newStatus
+                    )
+                }
+                _uiState.update { it.copy(infoMessage = "Incident marked as $newStatus") }
+            }
+        }
+    }
+
+    fun addComment(incidentId: Long, incidentCreatedAt: Long, authorName: String, text: String) {
+        if (text.isBlank()) return
+        viewModelScope.launch {
+            val deviceId = CloudIncidentSyncManager.getDeviceId(getApplication())
+            val comment = incidentRepository.addComment(
+                incidentId = incidentId,
+                incidentCreatedAt = incidentCreatedAt,
+                authorName = authorName,
+                text = text.trim(),
+                senderDeviceId = deviceId
+            )
+            launch(Dispatchers.IO) {
+                CloudIncidentSyncManager.publishComment(getApplication(), comment)
+            }
+            _uiState.update { it.copy(infoMessage = "Comment posted & shared with responders") }
         }
     }
 

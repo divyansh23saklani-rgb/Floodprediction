@@ -86,6 +86,9 @@ class MainActivity : ComponentActivity() {
         // Setup Disaster & Warning Notification Channels
         NotificationHelper.createNotificationChannels(this)
 
+        // Start background real-time disaster sync service for immediate push notifications
+        com.example.flood.service.DisasterSyncService.start(this)
+
         enableEdgeToEdge()
 
         setContent {
