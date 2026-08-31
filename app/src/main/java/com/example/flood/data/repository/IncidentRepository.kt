@@ -135,9 +135,18 @@ class IncidentRepository(
     }
 
     suspend fun insertRemoteComment(comment: Comment): Boolean {
-        val exists = commentDao.checkExists(comment.incidentId, comment.incidentCreatedAt, comment.createdAt, comment.text)
+        val exists = commentDao.checkExists(comment.createdAt, comment.text)
         if (exists == 0) {
-            commentDao.insertComment(comment)
+            // If local incident has a different SQLite ID, match by createdAt if possible
+            val localIncident = if (comment.incidentCreatedAt != 0L) {
+                dao.getIncidentByCreatedAt(comment.incidentCreatedAt)
+            } else null
+            val finalComment = if (localIncident != null && localIncident.id != comment.incidentId) {
+                comment.copy(incidentId = localIncident.id)
+            } else {
+                comment
+            }
+            commentDao.insertComment(finalComment)
             return true
         }
         return false

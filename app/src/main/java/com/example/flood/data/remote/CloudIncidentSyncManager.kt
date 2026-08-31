@@ -146,13 +146,14 @@ object CloudIncidentSyncManager {
     }
 
     private fun sendPayload(payload: JSONObject, title: String, priority: String, tags: String): Boolean {
-        return try {
-            val url = URL(SYNC_URL)
+        // 1. Try standard ntfy.sh JSON publishing endpoint
+        try {
+            val url = URL("https://ntfy.sh")
             val connection = (url.openConnection() as HttpURLConnection).apply {
                 requestMethod = "POST"
                 doOutput = true
-                connectTimeout = 8000
-                readTimeout = 8000
+                connectTimeout = 6000
+                readTimeout = 6000
                 setRequestProperty("Content-Type", "application/json; charset=utf-8")
             }
 
@@ -174,16 +175,41 @@ object CloudIncidentSyncManager {
             }
 
             val responseCode = connection.responseCode
-            val isSuccess = responseCode in 200..299
-            if (!isSuccess) {
-                val err = connection.errorStream?.bufferedReader()?.use { it.readText() }
-                Log.e(TAG, "ntfy publish error ($responseCode): $err")
-            }
             connection.disconnect()
-            isSuccess
+            if (responseCode in 200..299) {
+                return true
+            }
         } catch (e: Exception) {
-            Log.e(TAG, "sendPayload network error: ${e.message}", e)
-            false
+            Log.w(TAG, "ntfy root POST failed: ${e.message}, trying topic endpoint...")
+        }
+
+        // 2. Fallback: Publish directly to topic endpoint
+        try {
+            val url = URL(SYNC_URL)
+            val connection = (url.openConnection() as HttpURLConnection).apply {
+                requestMethod = "POST"
+                doOutput = true
+                connectTimeout = 6000
+                readTimeout = 6000
+                setRequestProperty("Content-Type", "text/plain; charset=utf-8")
+                setRequestProperty("Title", title)
+                setRequestProperty("Priority", priority)
+                if (tags.isNotBlank()) {
+                    setRequestProperty("Tags", tags)
+                }
+            }
+
+            OutputStreamWriter(connection.outputStream, Charsets.UTF_8).use { writer ->
+                writer.write(payload.toString())
+                writer.flush()
+            }
+
+            val responseCode = connection.responseCode
+            connection.disconnect()
+            return responseCode in 200..299
+        } catch (e: Exception) {
+            Log.e(TAG, "sendPayload fallback error: ${e.message}", e)
+            return false
         }
     }
 
@@ -195,16 +221,48 @@ object CloudIncidentSyncManager {
     }
 
     fun parseMessage(messageBody: String, myDeviceId: String): RemoteEvent? {
-        if (messageBody.isBlank() || !messageBody.startsWith("{")) return null
+        if (messageBody.isBlank()) return null
         return try {
-            val json = JSONObject(messageBody)
-            val sender = json.optString("senderDeviceId")
-            if (sender == myDeviceId) return null // Ignore self messages
+            val trimmed = messageBody.trim()
+            if (!trimmed.startsWith("{")) return null
+            var json = JSONObject(trimmed)
 
-            val action = json.optString("action", "incident")
-            when (action) {
+            // Unwrap nested wrappers if present
+            if (json.has("message") && !json.has("action") && !json.has("lat")) {
+                val inner = json.opt("message")
+                if (inner is JSONObject) {
+                    json = inner
+                } else if (inner is String && inner.trim().startsWith("{")) {
+                    json = JSONObject(inner.trim())
+                }
+            }
+            if (json.has("payload") && !json.has("action") && !json.has("lat")) {
+                val inner = json.opt("payload")
+                if (inner is JSONObject) {
+                    json = inner
+                } else if (inner is String && inner.trim().startsWith("{")) {
+                    json = JSONObject(inner.trim())
+                }
+            }
+
+            val sender = json.optString("senderDeviceId", "")
+            if (sender.isNotBlank() && sender == myDeviceId) {
+                return null // Ignore self messages
+            }
+
+            val rawAction = json.optString("action", "")
+            val effectiveAction = when {
+                rawAction.isNotBlank() -> rawAction
+                json.has("lat") && json.has("lng") -> "incident"
+                json.has("authorName") && json.has("text") -> "comment"
+                json.has("upvotes") || json.has("score") -> "vote"
+                json.has("status") && json.has("incidentCreatedAt") -> "status"
+                else -> ""
+            }
+
+            when (effectiveAction) {
                 "incident" -> {
-                    val type = json.optString("type", "flood")
+                    val type = json.optString("type", "accident")
                     val note = json.optString("note", "")
                     val lat = json.optDouble("lat", 0.0)
                     val lng = json.optDouble("lng", 0.0)
@@ -268,18 +326,19 @@ object CloudIncidentSyncManager {
                 else -> null
             }
         } catch (e: Exception) {
+            Log.e(TAG, "parseMessage error: ${e.message}", e)
             null
         }
     }
 
     /**
-     * Polls recent events from the last 48h.
+     * Polls recent events from the shared cloud network.
      */
     suspend fun fetchRecentEvents(context: Context): List<RemoteEvent> = withContext(Dispatchers.IO) {
         val events = mutableListOf<RemoteEvent>()
         try {
             val myDeviceId = getDeviceId(context)
-            val queryUrl = URL("$SYNC_URL/json?poll=1&since=48h")
+            val queryUrl = URL("$SYNC_URL/json?poll=1&since=all")
             val connection = (queryUrl.openConnection() as HttpURLConnection).apply {
                 requestMethod = "GET"
                 connectTimeout = 8000
@@ -287,22 +346,25 @@ object CloudIncidentSyncManager {
             }
 
             if (connection.responseCode in 200..299) {
-                BufferedReader(InputStreamReader(connection.inputStream)).use { reader ->
+                BufferedReader(InputStreamReader(connection.inputStream, Charsets.UTF_8)).use { reader ->
                     var line: String?
                     while (reader.readLine().also { line = it } != null) {
                         val trimmed = line?.trim() ?: continue
                         if (trimmed.isEmpty() || !trimmed.startsWith("{")) continue
                         try {
                             val eventJson = JSONObject(trimmed)
-                            if (eventJson.optString("event") == "message") {
-                                val messageBody = eventJson.optString("message")
-                                val event = parseMessage(messageBody, myDeviceId)
-                                if (event != null) {
-                                    events.add(event)
-                                }
+                            val messageBody = if (eventJson.has("message")) {
+                                eventJson.optString("message")
+                            } else {
+                                trimmed
+                            }
+                            val event = parseMessage(messageBody, myDeviceId)
+                                ?: parseMessage(trimmed, myDeviceId)
+                            if (event != null) {
+                                events.add(event)
                             }
                         } catch (e: Exception) {
-                            // skip
+                            // skip individual malformed line
                         }
                     }
                 }

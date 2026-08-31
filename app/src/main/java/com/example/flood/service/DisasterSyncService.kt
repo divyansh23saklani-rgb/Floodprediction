@@ -79,58 +79,67 @@ class DisasterSyncService : Service() {
 
                             try {
                                 val eventJson = JSONObject(trimmed)
-                                if (eventJson.optString("event") == "message") {
-                                    val messageBody = eventJson.optString("message")
-                                    val event = CloudIncidentSyncManager.parseMessage(messageBody, myDeviceId)
+                                val messageBody = if (eventJson.has("message")) {
+                                    eventJson.optString("message")
+                                } else {
+                                    trimmed
+                                }
+                                val event = CloudIncidentSyncManager.parseMessage(messageBody, myDeviceId)
+                                    ?: CloudIncidentSyncManager.parseMessage(trimmed, myDeviceId)
 
-                                    when (event) {
-                                        is CloudIncidentSyncManager.RemoteEvent.NewIncident -> {
-                                            val inc = event.incident
-                                            val exists = db.incidentDao().checkExists(inc.createdAt)
-                                            if (exists == 0) {
-                                                db.incidentDao().insertIncident(inc)
-                                                NotificationHelper.sendIncidentReportNotification(
-                                                    context = this@DisasterSyncService,
-                                                    typeLabel = inc.incidentType.label,
-                                                    severity = inc.severity,
-                                                    locationNote = inc.note.ifBlank { "Location: (${String.format(java.util.Locale.US, "%.4f", inc.lat)}, ${String.format(java.util.Locale.US, "%.4f", inc.lng)})" }
-                                                )
-                                            }
-                                        }
-                                        is CloudIncidentSyncManager.RemoteEvent.NewComment -> {
-                                            val comment = event.comment
-                                            val exists = db.commentDao().checkExists(
-                                                incidentId = comment.incidentId,
-                                                incidentCreatedAt = comment.incidentCreatedAt,
-                                                createdAt = comment.createdAt,
-                                                text = comment.text
-                                            )
-                                            if (exists == 0) {
-                                                db.commentDao().insertComment(comment)
-                                                NotificationHelper.sendCommentNotification(
-                                                    context = this@DisasterSyncService,
-                                                    author = comment.authorName,
-                                                    commentText = comment.text,
-                                                    hazardType = "Community Hazard Report"
-                                                )
-                                            }
-                                        }
-                                        is CloudIncidentSyncManager.RemoteEvent.VoteUpdate -> {
-                                            db.incidentDao().updateVotesByCreatedAt(
-                                                createdAt = event.incidentCreatedAt,
-                                                upvotes = event.upvotes,
-                                                downvotes = event.downvotes,
-                                                score = event.score
+                                when (event) {
+                                    is CloudIncidentSyncManager.RemoteEvent.NewIncident -> {
+                                        val inc = event.incident
+                                        val exists = db.incidentDao().checkExists(inc.createdAt)
+                                        if (exists == 0) {
+                                            db.incidentDao().insertIncident(inc)
+                                            NotificationHelper.sendIncidentReportNotification(
+                                                context = this@DisasterSyncService,
+                                                typeLabel = inc.incidentType.label,
+                                                severity = inc.severity,
+                                                locationNote = inc.note.ifBlank { "Location: (${String.format(java.util.Locale.US, "%.4f", inc.lat)}, ${String.format(java.util.Locale.US, "%.4f", inc.lng)})" }
                                             )
                                         }
-                                        is CloudIncidentSyncManager.RemoteEvent.StatusUpdate -> {
-                                            db.incidentDao().updateStatusByCreatedAt(
-                                                createdAt = event.incidentCreatedAt,
-                                                status = event.status
-                                            )
-                                        }
-                                        null -> { /* non-actionable or self message */ }
                                     }
+                                    is CloudIncidentSyncManager.RemoteEvent.NewComment -> {
+                                        val comment = event.comment
+                                        val exists = db.commentDao().checkExists(
+                                            createdAt = comment.createdAt,
+                                            text = comment.text
+                                        )
+                                        if (exists == 0) {
+                                            val localIncident = if (comment.incidentCreatedAt != 0L) {
+                                                db.incidentDao().getIncidentByCreatedAt(comment.incidentCreatedAt)
+                                            } else null
+                                            val finalComment = if (localIncident != null && localIncident.id != comment.incidentId) {
+                                                comment.copy(incidentId = localIncident.id)
+                                            } else {
+                                                comment
+                                            }
+                                            db.commentDao().insertComment(finalComment)
+                                            NotificationHelper.sendCommentNotification(
+                                                context = this@DisasterSyncService,
+                                                author = comment.authorName,
+                                                commentText = comment.text,
+                                                hazardType = "Community Hazard Report"
+                                            )
+                                        }
+                                    }
+                                    is CloudIncidentSyncManager.RemoteEvent.VoteUpdate -> {
+                                        db.incidentDao().updateVotesByCreatedAt(
+                                            createdAt = event.incidentCreatedAt,
+                                            upvotes = event.upvotes,
+                                            downvotes = event.downvotes,
+                                            score = event.score
+                                        )
+                                    }
+                                    is CloudIncidentSyncManager.RemoteEvent.StatusUpdate -> {
+                                        db.incidentDao().updateStatusByCreatedAt(
+                                            createdAt = event.incidentCreatedAt,
+                                            status = event.status
+                                        )
+                                    }
+                                    null -> { /* non-actionable or self message */ }
                                 }
                             } catch (e: Exception) {
                                 Log.w(TAG, "Error handling incoming stream line: ${e.message}")

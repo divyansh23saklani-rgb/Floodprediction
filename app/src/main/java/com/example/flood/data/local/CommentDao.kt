@@ -10,14 +10,14 @@ import kotlinx.coroutines.flow.Flow
 
 @Dao
 interface CommentDao {
-    @Query("SELECT * FROM incident_comments WHERE incidentId = :incidentId OR incidentCreatedAt = :incidentCreatedAt ORDER BY createdAt ASC")
+    @Query("SELECT * FROM incident_comments WHERE (:incidentId != 0 AND incidentId = :incidentId) OR (:incidentCreatedAt != 0 AND incidentCreatedAt = :incidentCreatedAt) ORDER BY createdAt ASC")
     fun getCommentsForIncident(incidentId: Long, incidentCreatedAt: Long): Flow<List<Comment>>
 
     @Query("SELECT * FROM incident_comments ORDER BY createdAt ASC")
     fun getAllComments(): Flow<List<Comment>>
 
-    @Query("SELECT COUNT(*) FROM incident_comments WHERE (incidentId = :incidentId OR incidentCreatedAt = :incidentCreatedAt) AND createdAt = :createdAt AND text = :text")
-    suspend fun checkExists(incidentId: Long, incidentCreatedAt: Long, createdAt: Long, text: String): Int
+    @Query("SELECT COUNT(*) FROM incident_comments WHERE createdAt = :createdAt AND text = :text")
+    suspend fun checkExists(createdAt: Long, text: String): Int
 
     @Insert(onConflict = OnConflictStrategy.REPLACE)
     suspend fun insertComment(comment: Comment): Long
