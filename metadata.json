@@ -1,0 +1,8 @@
+{
+  "name": "Flood Alert",
+  "description": "Real-time flood and disaster alert map with rainfall risk monitoring, emergency shelters, and community incident reporting",
+  "requestFramePermissions": [],
+  "majorCapabilities": [
+    "MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"
+  ]
+}

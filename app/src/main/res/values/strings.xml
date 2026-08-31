@@ -1,0 +1,7 @@
+<resources>
+    <string name="app_name">Flood Alert</string>
+    <string name="title_map">Disaster Map</string>
+    <string name="title_reports">Incidents</string>
+    <string name="title_shelters">Emergency Services</string>
+    <string name="title_settings">Settings</string>
+</resources>
