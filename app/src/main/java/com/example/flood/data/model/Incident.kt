@@ -5,6 +5,7 @@ import androidx.room.PrimaryKey
 import kotlinx.serialization.Serializable
 
 enum class IncidentType(val label: String, val emoji: String, val colorHex: String) {
+    ACCIDENT("Accident / Crash", "💥", "#DC2626"),
     FLOOD("Flood", "🌊", "#DC2626"),
     LANDSLIDE("Landslide", "⛰️", "#EA580C"),
     TREE("Tree Fall", "🌳", "#16A34A"),
@@ -14,8 +15,13 @@ enum class IncidentType(val label: String, val emoji: String, val colorHex: Stri
 
     companion object {
         fun fromString(value: String): IncidentType {
-            return entries.find { it.name.equals(value, ignoreCase = true) || it.label.equals(value, ignoreCase = true) }
-                ?: FLOOD
+            val normalized = value.trim().lowercase()
+            return entries.find {
+                it.name.equals(normalized, ignoreCase = true) ||
+                it.label.equals(normalized, ignoreCase = true) ||
+                normalized.contains("accident") ||
+                normalized.contains("crash")
+            } ?: entries.find { normalized.contains(it.name, ignoreCase = true) } ?: ACCIDENT
         }
     }
 }

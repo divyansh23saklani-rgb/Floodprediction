@@ -86,14 +86,14 @@ class DisasterSyncService : Service() {
                                     when (event) {
                                         is CloudIncidentSyncManager.RemoteEvent.NewIncident -> {
                                             val inc = event.incident
-                                            val exists = db.incidentDao().checkExists(inc.createdAt, inc.lat, inc.lng, inc.type)
+                                            val exists = db.incidentDao().checkExists(inc.createdAt)
                                             if (exists == 0) {
                                                 db.incidentDao().insertIncident(inc)
                                                 NotificationHelper.sendIncidentReportNotification(
                                                     context = this@DisasterSyncService,
-                                                    typeLabel = inc.type.uppercase(),
+                                                    typeLabel = inc.incidentType.label,
                                                     severity = inc.severity,
-                                                    locationNote = inc.note.ifBlank { "Location: (${inc.lat}, ${inc.lng})" }
+                                                    locationNote = inc.note.ifBlank { "Location: (${String.format(java.util.Locale.US, "%.4f", inc.lat)}, ${String.format(java.util.Locale.US, "%.4f", inc.lng)})" }
                                                 )
                                             }
                                         }

@@ -105,39 +105,31 @@ fun ReportIncidentSheet(
                 modifier = Modifier.padding(top = 10.dp, bottom = 8.dp)
             )
 
-            // Incident Types 2-row grid
+            // Incident Types Grid
             Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
                 val types = IncidentType.entries
-                val row1 = types.take(3)
-                val row2 = types.drop(3)
+                val rows = types.chunked(3)
 
-                Row(
-                    modifier = Modifier.fillMaxWidth(),
-                    horizontalArrangement = Arrangement.spacedBy(8.dp)
-                ) {
-                    row1.forEach { type ->
-                        val isSelected = selectedType == type
-                        IncidentTypeCard(
-                            type = type,
-                            isSelected = isSelected,
-                            onSelect = { selectedType = type },
-                            modifier = Modifier.weight(1f)
-                        )
-                    }
-                }
-
-                Row(
-                    modifier = Modifier.fillMaxWidth(),
-                    horizontalArrangement = Arrangement.spacedBy(8.dp)
-                ) {
-                    row2.forEach { type ->
-                        val isSelected = selectedType == type
-                        IncidentTypeCard(
-                            type = type,
-                            isSelected = isSelected,
-                            onSelect = { selectedType = type },
-                            modifier = Modifier.weight(1f)
-                        )
+                rows.forEach { rowTypes ->
+                    Row(
+                        modifier = Modifier.fillMaxWidth(),
+                        horizontalArrangement = Arrangement.spacedBy(8.dp)
+                    ) {
+                        rowTypes.forEach { type ->
+                            val isSelected = selectedType == type
+                            IncidentTypeCard(
+                                type = type,
+                                isSelected = isSelected,
+                                onSelect = { selectedType = type },
+                                modifier = Modifier.weight(1f)
+                            )
+                        }
+                        // Pad empty spaces if row has fewer than 3 items
+                        if (rowTypes.size < 3) {
+                            for (i in 0 until (3 - rowTypes.size)) {
+                                Spacer(modifier = Modifier.weight(1f))
+                            }
+                        }
                     }
                 }
             }

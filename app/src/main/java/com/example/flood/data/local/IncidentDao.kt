@@ -20,8 +20,8 @@ interface IncidentDao {
     @Query("SELECT COUNT(*) FROM incidents")
     suspend fun getIncidentCount(): Int
 
-    @Query("SELECT COUNT(*) FROM incidents WHERE createdAt = :createdAt OR (lat = :lat AND lng = :lng AND type = :type)")
-    suspend fun checkExists(createdAt: Long, lat: Double, lng: Double, type: String): Int
+    @Query("SELECT COUNT(*) FROM incidents WHERE createdAt = :createdAt")
+    suspend fun checkExists(createdAt: Long): Int
 
     @Insert(onConflict = OnConflictStrategy.REPLACE)
     suspend fun insertIncident(incident: Incident): Long

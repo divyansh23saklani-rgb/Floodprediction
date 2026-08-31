@@ -47,7 +47,7 @@ class IncidentRepository(
     }
 
     suspend fun insertRemoteIncident(incident: Incident): Boolean {
-        val count = dao.checkExists(incident.createdAt, incident.lat, incident.lng, incident.type)
+        val count = dao.checkExists(incident.createdAt)
         if (count == 0) {
             dao.insertIncident(incident)
             return true

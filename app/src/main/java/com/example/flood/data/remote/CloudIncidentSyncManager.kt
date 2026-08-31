@@ -50,7 +50,7 @@ object CloudIncidentSyncManager {
             }
             sendPayload(
                 payload = payload,
-                title = "🚨 Community Disaster: ${incident.type.uppercase()}",
+                title = "🚨 Community Hazard: ${incident.type.uppercase()}",
                 priority = if (incident.severity.equals("HIGH", ignoreCase = true)) "5" else "4",
                 tags = "warning,rotating_light"
             )
@@ -77,7 +77,7 @@ object CloudIncidentSyncManager {
             }
             sendPayload(
                 payload = payload,
-                title = "💬 New Comment from ${comment.authorName}",
+                title = "💬 Update on Hazard Report",
                 priority = "3",
                 tags = "speech_balloon"
             )
@@ -136,7 +136,7 @@ object CloudIncidentSyncManager {
             }
             sendPayload(
                 payload = payload,
-                title = "✅ Incident Status: $status",
+                title = "✅ Hazard Status: $status",
                 priority = "3",
                 tags = "check"
             )
@@ -146,26 +146,45 @@ object CloudIncidentSyncManager {
     }
 
     private fun sendPayload(payload: JSONObject, title: String, priority: String, tags: String): Boolean {
-        val url = URL(SYNC_URL)
-        val connection = (url.openConnection() as HttpURLConnection).apply {
-            requestMethod = "POST"
-            doOutput = true
-            connectTimeout = 8000
-            readTimeout = 8000
-            setRequestProperty("Content-Type", "application/json; charset=utf-8")
-            setRequestProperty("Title", title)
-            setRequestProperty("Priority", priority)
-            setRequestProperty("Tags", tags)
-        }
+        return try {
+            val url = URL(SYNC_URL)
+            val connection = (url.openConnection() as HttpURLConnection).apply {
+                requestMethod = "POST"
+                doOutput = true
+                connectTimeout = 8000
+                readTimeout = 8000
+                setRequestProperty("Content-Type", "application/json; charset=utf-8")
+            }
 
-        OutputStreamWriter(connection.outputStream).use { writer ->
-            writer.write(payload.toString())
-            writer.flush()
-        }
+            val ntfyBody = JSONObject().apply {
+                put("topic", SYNC_TOPIC)
+                put("title", title)
+                put("message", payload.toString())
+                put("priority", priority.toIntOrNull() ?: 4)
+                if (tags.isNotBlank()) {
+                    val tagsArray = org.json.JSONArray()
+                    tags.split(",").map { it.trim() }.filter { it.isNotEmpty() }.forEach { tagsArray.put(it) }
+                    put("tags", tagsArray)
+                }
+            }
 
-        val responseCode = connection.responseCode
-        connection.disconnect()
-        return responseCode in 200..299
+            OutputStreamWriter(connection.outputStream, Charsets.UTF_8).use { writer ->
+                writer.write(ntfyBody.toString())
+                writer.flush()
+            }
+
+            val responseCode = connection.responseCode
+            val isSuccess = responseCode in 200..299
+            if (!isSuccess) {
+                val err = connection.errorStream?.bufferedReader()?.use { it.readText() }
+                Log.e(TAG, "ntfy publish error ($responseCode): $err")
+            }
+            connection.disconnect()
+            isSuccess
+        } catch (e: Exception) {
+            Log.e(TAG, "sendPayload network error: ${e.message}", e)
+            false
+        }
     }
 
     sealed class RemoteEvent {

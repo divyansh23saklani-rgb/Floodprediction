@@ -117,12 +117,12 @@ class FloodViewModel(application: Application) : AndroidViewModel(application) {
                     if (isNew) {
                         NotificationHelper.sendIncidentReportNotification(
                             context = getApplication(),
-                            typeLabel = event.incident.type.uppercase(),
+                            typeLabel = event.incident.incidentType.label,
                             severity = event.incident.severity,
-                            locationNote = event.incident.note.ifBlank { "Location: (${event.incident.lat}, ${event.incident.lng})" }
+                            locationNote = event.incident.note.ifBlank { "Location: (${String.format(java.util.Locale.US, "%.4f", event.incident.lat)}, ${String.format(java.util.Locale.US, "%.4f", event.incident.lng)})" }
                         )
                         _uiState.update {
-                            it.copy(infoMessage = "🚨 Live Alert: New ${event.incident.type.uppercase()} reported nearby!")
+                            it.copy(infoMessage = "🚨 Live Alert: New ${event.incident.incidentType.label} reported nearby!")
                         }
                     }
                 }
@@ -359,9 +359,9 @@ class FloodViewModel(application: Application) : AndroidViewModel(application) {
             // Dispatch local confirmation push notification
             NotificationHelper.sendIncidentReportNotification(
                 context = getApplication(),
-                typeLabel = type.uppercase(),
+                typeLabel = savedIncident.incidentType.label,
                 severity = severity,
-                locationNote = note.ifBlank { "Location: ($finalLat, $finalLng)" }
+                locationNote = note.ifBlank { "Location: (${String.format(java.util.Locale.US, "%.4f", finalLat)}, ${String.format(java.util.Locale.US, "%.4f", finalLng)})" }
             )
 
             // Broadcast to other devices over shared disaster sync network
